@@ -48,7 +48,7 @@ router.get('/cart', authenticateToken, (req, res) => {
 // create order
 router.post('/create-order', authenticateToken, async (req, res) => {
   const user_id = req.user.id;
-
+console.log("Razorpay:", req.app.locals.razorpay);
   db.all(`
     SELECT projects.price 
     FROM cart 
