@@ -8,7 +8,6 @@ const jwt = require('jsonwebtoken');
 const app = express();
 app.use(express.json());
 app.use(cors());
-app.locals.razorpay = razorpayInstance;
 
 let razorpayInstance = null;
 
@@ -20,6 +19,7 @@ if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
     key_secret: process.env.RAZORPAY_KEY_SECRET,
   });
 }
+app.locals.razorpay = razorpayInstance;
 
 // Create SQLite Database
 const db = new sqlite3.Database('./database.db', (err) => {
