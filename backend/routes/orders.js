@@ -45,31 +45,71 @@ router.get('/cart', authenticateToken, (req, res) => {
 });
 
 // ---------- CHECKOUT ----------
+// create order
+router.post('/create-order', authenticateToken, async (req, res) => {
+  const user_id = req.user.id;
+
+  db.all(`
+    SELECT projects.price 
+    FROM cart 
+    JOIN projects ON cart.project_id = projects.id
+    WHERE cart.user_id = ?
+  `, [user_id], async (err, items) => {
+
+    if (err || !items.length)
+      return res.status(400).json({ message: 'Cart is empty' });
+
+    const total = items.reduce((sum, item) => sum + item.price, 0);
+
+    try {
+      const order = await req.app.locals.razorpay.orders.create({
+        amount: total * 100,
+        currency: "INR"
+      });
+
+      res.json({ order, total });
+
+    } catch (err) {
+      console.log(err);
+      res.status(500).send("Error creating Razorpay order");
+    }
+  });
+});
 
 // Checkout cart items
 router.post('/checkout', authenticateToken, (req, res) => {
   const user_id = req.user.id;
+  const { payment_id } = req.body;
 
-  // 1. Get all cart items
-  db.all(`SELECT * FROM cart WHERE user_id = ?`, [user_id], (err, cartItems) => {
-    if (err || !cartItems.length) return res.status(400).json({ message: 'Cart is empty' });
+  db.all(`
+    SELECT cart.project_id, projects.file_url
+    FROM cart
+    JOIN projects ON cart.project_id = projects.id
+    WHERE cart.user_id = ?
+  `, [user_id], (err, cartItems) => {
 
-    // 2. Insert each cart item into orders
-    const stmt = db.prepare(`INSERT INTO orders (user_id, project_id, download_link) VALUES (?, ?, ?)`);
+    if (err || !cartItems.length)
+      return res.status(400).json({ message: 'Cart is empty' });
+
+    const stmt = db.prepare(`
+      INSERT INTO orders (user_id, project_id, payment_id, status, download_link)
+      VALUES (?, ?, ?, 'completed', ?)
+    `);
+
     cartItems.forEach(item => {
-      const download_link = `/files/project_${item.project_id}.zip`; // adjust this path as needed
-      stmt.run(user_id, item.project_id, download_link);
+      stmt.run(user_id, item.project_id, payment_id, item.file_url);
     });
+
     stmt.finalize();
 
-    // 3. Clear cart
+    // Clear cart
     db.run(`DELETE FROM cart WHERE user_id = ?`, [user_id]);
 
-    res.json({ message: 'Checkout successful, order created!' });
+    res.json({ message: 'Payment successful, orders created!' });
   });
 });
-
 // ---------- ORDERS ----------
+
 
 // Get orders for logged-in student
 router.get('/my', authenticateToken, (req, res) => {

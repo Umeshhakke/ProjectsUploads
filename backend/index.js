@@ -8,7 +8,7 @@ const jwt = require('jsonwebtoken');
 const app = express();
 app.use(express.json());
 app.use(cors());
-
+app.locals.razorpay = razorpayInstance;
 
 let razorpayInstance = null;
 
