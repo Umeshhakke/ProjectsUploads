@@ -47,33 +47,50 @@ router.get('/cart', authenticateToken, (req, res) => {
 // ---------- CHECKOUT ----------
 // create order
 router.post('/create-order', authenticateToken, async (req, res) => {
-  const user_id = req.user.id;
-console.log("Razorpay:", req.app.locals.razorpay);
-  db.all(`
-    SELECT projects.price 
-    FROM cart 
-    JOIN projects ON cart.project_id = projects.id
-    WHERE cart.user_id = ?
-  `, [user_id], async (err, items) => {
+  try {
+    const db = require('../config/db');
 
-    if (err || !items.length)
-      return res.status(400).json({ message: 'Cart is empty' });
+    const user_id = req.user.id;
 
-    const total = items.reduce((sum, item) => sum + item.price, 0);
+    // 1️⃣ Get cart items
+    db.all(
+      `SELECT projects.price 
+       FROM cart 
+       JOIN projects ON cart.project_id = projects.id 
+       WHERE cart.user_id = ?`,
+      [user_id],
+      async (err, items) => {
+        if (err) {
+          console.log("DB ERROR:", err);
+          return res.status(500).send("DB error");
+        }
 
-    try {
-      const order = await req.app.locals.razorpay.orders.create({
-        amount: total * 100,
-        currency: "INR"
-      });
+        if (!items.length) {
+          return res.status(400).json({ message: "Cart empty" });
+        }
 
-      res.json({ order, total });
+        // 2️⃣ Calculate total
+        const total = items.reduce((sum, i) => sum + i.price, 0);
 
-    } catch (err) {
-      console.log(err);
-      res.status(500).send("Error creating Razorpay order");
-    }
-  });
+        console.log("TOTAL:", total);
+
+        // 3️⃣ Create Razorpay order
+        const razorpay = req.app.locals.razorpay;
+
+        const order = await razorpay.orders.create({
+          amount: Math.round(total * 100), // paisa
+          currency: "INR",
+        });
+
+        console.log("ORDER CREATED:", order.id);
+
+        res.json({ order, total });
+      }
+    );
+  } catch (err) {
+    console.log("🔥 CREATE ORDER ERROR:", err);
+    res.status(500).send("Server error");
+  }
 });
 
 // Checkout cart items
