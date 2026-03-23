@@ -121,4 +121,22 @@ router.post('/verify-payment', authenticateToken, (req, res) => {
     res.json({ message: "Payment successful" });
   });
 });
+router.get('/my-orders', authenticateToken, (req, res) => {
+  const user_id = req.user.id;
+
+  db.all(`
+    SELECT o.*, p.name, p.price, p.image_url
+    FROM orders o
+    JOIN projects p ON o.project_id = p.id
+    WHERE o.user_id = ?
+  `, [user_id], (err, rows) => {
+
+    if (err) {
+      console.log("Orders fetch error:", err);
+      return res.status(500).json({ message: "Failed to fetch orders" });
+    }
+
+    res.json(rows);
+  });
+});
 module.exports = router;
