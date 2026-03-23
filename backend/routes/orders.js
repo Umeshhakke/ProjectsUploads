@@ -21,38 +21,50 @@ router.post('/create-order', authenticateToken, (req, res) => {
   const user_id = req.user.id;
 
   db.all(
-    `SELECT projects.price FROM cart JOIN projects ON cart.project_id = projects.id WHERE cart.user_id = ?`,
+    `SELECT projects.price 
+     FROM cart 
+     JOIN projects ON cart.project_id = projects.id 
+     WHERE cart.user_id = ?`,
     [user_id],
     async (err, items) => {
+
       if (err) return res.status(500).json({ message: "DB error" });
       if (!items.length) return res.status(400).json({ message: "Cart empty" });
 
       const total = items.reduce((sum, i) => sum + i.price, 0);
-      const razorpay = req.app.locals.razorpay;
-      if (!razorpay) return res.status(500).json({ message: "Razorpay not initialized" });
+
+      // 🚨 IMPORTANT FIX
+      if (total <= 0) {
+        return res.status(400).json({
+          message: "Invalid amount. Cannot process ₹0 payment"
+        });
+      }
 
       try {
+        const razorpay = req.app.locals.razorpay;
+
         const order = await razorpay.orders.create({
-          amount: Math.round(total * 100), // in paisa
+          amount: Math.round(total * 100), // paisa
           currency: "INR",
           receipt: `receipt_${Date.now()}`,
-          payment_capture: 1,
+          notes: {
+            user_id: user_id
+          }
         });
 
-        // 🔹 Hosted link redirect
-        const hostedLink = `https://checkout.razorpay.com/v1/checkout.js?order_id=${order.id}`;
+        res.json({
+          order_id: order.id,
+          amount: order.amount,
+          currency: order.currency
+        });
 
-        res.json({ order, total, hostedLink });
-
-      } catch (error) {
-        console.log("🔥 Razorpay error:", error);
+      } catch (err) {
+        console.log("🔥 Razorpay error:", err);
         res.status(500).json({ message: "Order creation failed" });
       }
     }
   );
-});
-
-// ===== WEBHOOK / CHECKOUT =====
+});// ===== WEBHOOK / CHECKOUT =====
 router.post('/webhook', express.json({ type: 'application/json' }), (req, res) => {
   const { payload } = req.body;
   const paymentId = payload.payment.entity.id;
