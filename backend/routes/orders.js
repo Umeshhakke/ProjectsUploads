@@ -20,39 +20,36 @@ function authenticateToken(req, res, next) {
 router.post('/create-order', authenticateToken, (req, res) => {
   const user_id = req.user.id;
 
-  const query = `
-    SELECT projects.price 
-    FROM cart 
-    JOIN projects ON cart.project_id = projects.id 
-    WHERE cart.user_id = ?
-  `;
+  db.all(
+    `SELECT projects.price FROM cart JOIN projects ON cart.project_id = projects.id WHERE cart.user_id = ?`,
+    [user_id],
+    async (err, items) => {
+      if (err) return res.status(500).json({ message: "DB error" });
+      if (!items.length) return res.status(400).json({ message: "Cart empty" });
 
-  db.all(query, [user_id], async (err, items) => {
-    if (err) return res.status(500).json({ message: "Database error" });
-    if (!items.length) return res.status(400).json({ message: "Cart empty" });
+      const total = items.reduce((sum, i) => sum + i.price, 0);
+      const razorpay = req.app.locals.razorpay;
+      if (!razorpay) return res.status(500).json({ message: "Razorpay not initialized" });
 
-    const total = items.reduce((sum, i) => sum + i.price, 0);
-    const razorpay = req.app.locals.razorpay;
-    if (!razorpay) return res.status(500).json({ message: "Razorpay not initialized" });
+      try {
+        const order = await razorpay.orders.create({
+          amount: Math.round(total * 100), // in paisa
+          currency: "INR",
+          receipt: `receipt_${Date.now()}`,
+          payment_capture: 1,
+        });
 
-    try {
-      const order = await razorpay.orders.create({
-        amount: Math.round(total * 100),
-        currency: "INR",
-        receipt: `receipt_${Date.now()}`,
-        payment_capture: 1
-      });
+        // 🔹 Hosted link redirect
+        const hostedLink = `https://checkout.razorpay.com/v1/checkout.js?order_id=${order.id}`;
 
-      // 🔹 Generate hosted payment link for user
-      const hostedLink = `https://checkout.razorpay.com/v1/checkout.js?order_id=${order.id}`;
+        res.json({ order, total, hostedLink });
 
-      res.json({ order, total, hostedLink });
-
-    } catch (error) {
-      console.log("🔥 RAZORPAY ERROR:", error);
-      res.status(500).json({ message: "Order creation failed", error: error.message });
+      } catch (error) {
+        console.log("🔥 Razorpay error:", error);
+        res.status(500).json({ message: "Order creation failed" });
+      }
     }
-  });
+  );
 });
 
 // ===== WEBHOOK / CHECKOUT =====
