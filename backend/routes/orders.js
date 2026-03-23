@@ -55,12 +55,10 @@ router.post('/create-order', authenticateToken, (req, res) => {
 // ===== WEBHOOK / CHECKOUT =====
 router.post('/webhook', express.json({ type: 'application/json' }), (req, res) => {
   const { payload } = req.body;
-
   const paymentId = payload.payment.entity.id;
   const orderId = payload.payment.entity.order_id;
-  const userId = payload.payment.entity.notes.user_id; // Optional if you sent notes
+  const userId = payload.payment.entity.notes.user_id; // if you added notes
 
-  // Mark all cart items as completed for this user
   db.all(`SELECT project_id FROM cart WHERE user_id = ?`, [userId], (err, items) => {
     if (err || !items.length) return res.status(400).json({ message: 'No cart items' });
 
@@ -68,7 +66,6 @@ router.post('/webhook', express.json({ type: 'application/json' }), (req, res) =
       INSERT INTO orders (user_id, project_id, payment_id, status)
       VALUES (?, ?, ?, 'completed')
     `);
-
     items.forEach(item => stmt.run(userId, item.project_id, paymentId));
     stmt.finalize();
 
@@ -76,5 +73,4 @@ router.post('/webhook', express.json({ type: 'application/json' }), (req, res) =
     res.json({ message: 'Payment verified and orders created!' });
   });
 });
-
 module.exports = router;
