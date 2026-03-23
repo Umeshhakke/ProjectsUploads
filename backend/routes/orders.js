@@ -7,6 +7,8 @@ const jwt = require('jsonwebtoken');
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
+  const crypto = require("crypto");
+  
   if (!token) return res.sendStatus(401);
 
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
@@ -17,54 +19,47 @@ function authenticateToken(req, res, next) {
 }
 
 // ===== CREATE ORDER =====
-router.post('/create-order', authenticateToken, (req, res) => {
+router.post('/create-order', authenticateToken, async (req, res) => {
   const user_id = req.user.id;
 
-  db.all(
-    `SELECT projects.price 
-     FROM cart 
-     JOIN projects ON cart.project_id = projects.id 
-     WHERE cart.user_id = ?`,
-    [user_id],
-    async (err, items) => {
+  db.all(`
+    SELECT projects.price 
+    FROM cart 
+    JOIN projects ON cart.project_id = projects.id 
+    WHERE cart.user_id = ?
+  `, [user_id], async (err, items) => {
 
-      if (err) return res.status(500).json({ message: "DB error" });
-      if (!items.length) return res.status(400).json({ message: "Cart empty" });
+    if (err) return res.status(500).json({ message: "DB error" });
+    if (!items.length) return res.status(400).json({ message: "Cart empty" });
 
-      const total = items.reduce((sum, i) => sum + i.price, 0);
+    const total = items.reduce((sum, i) => sum + i.price, 0);
 
-      // 🚨 IMPORTANT FIX
-      if (total <= 0) {
-        return res.status(400).json({
-          message: "Invalid amount. Cannot process ₹0 payment"
-        });
-      }
-
-      try {
-        const razorpay = req.app.locals.razorpay;
-
-        const order = await razorpay.orders.create({
-          amount: Math.round(total * 100), // paisa
-          currency: "INR",
-          receipt: `receipt_${Date.now()}`,
-          notes: {
-            user_id: user_id
-          }
-        });
-
-        res.json({
-          order_id: order.id,
-          amount: order.amount,
-          currency: order.currency
-        });
-
-      } catch (err) {
-        console.log("🔥 Razorpay error:", err);
-        res.status(500).json({ message: "Order creation failed" });
-      }
+    if (total <= 0) {
+      return res.status(400).json({ message: "Invalid amount" });
     }
-  );
-});// ===== WEBHOOK / CHECKOUT =====
+
+    try {
+      const razorpay = req.app.locals.razorpay;
+
+      const order = await razorpay.orders.create({
+        amount: total * 100,
+        currency: "INR",
+        receipt: "receipt_" + Date.now(),
+      });
+
+      res.json({
+        order_id: order.id,
+        amount: order.amount,
+        currency: order.currency
+      });
+
+    } catch (err) {
+      console.log(err);
+      res.status(500).json({ message: "Order creation failed" });
+    }
+  });
+});
+// ===== WEBHOOK / CHECKOUT =====
 router.post('/webhook', express.json({ type: 'application/json' }), (req, res) => {
   const { payload } = req.body;
   const paymentId = payload.payment.entity.id;
@@ -85,15 +80,18 @@ router.post('/webhook', express.json({ type: 'application/json' }), (req, res) =
     res.json({ message: 'Payment verified and orders created!' });
   });
 });
-const crypto = require('crypto');
 
 router.post('/verify-payment', authenticateToken, (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+  const {
+    razorpay_order_id,
+    razorpay_payment_id,
+    razorpay_signature
+  } = req.body;
 
   const generated_signature = crypto
-    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
     .update(razorpay_order_id + "|" + razorpay_payment_id)
-    .digest('hex');
+    .digest("hex");
 
   if (generated_signature !== razorpay_signature) {
     return res.status(400).json({ message: "Payment verification failed" });
@@ -102,8 +100,6 @@ router.post('/verify-payment', authenticateToken, (req, res) => {
   const user_id = req.user.id;
 
   db.all(`SELECT project_id FROM cart WHERE user_id = ?`, [user_id], (err, items) => {
-    if (err || !items.length)
-      return res.status(400).json({ message: "Cart empty" });
 
     const stmt = db.prepare(`
       INSERT INTO orders (user_id, project_id, status)
@@ -115,7 +111,7 @@ router.post('/verify-payment', authenticateToken, (req, res) => {
 
     db.run(`DELETE FROM cart WHERE user_id = ?`, [user_id]);
 
-    res.json({ message: "Payment successful, order placed!" });
+    res.json({ message: "Payment successful" });
   });
 });
 module.exports = router;
