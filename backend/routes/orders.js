@@ -85,4 +85,37 @@ router.post('/webhook', express.json({ type: 'application/json' }), (req, res) =
     res.json({ message: 'Payment verified and orders created!' });
   });
 });
+const crypto = require('crypto');
+
+router.post('/verify-payment', authenticateToken, (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+  const generated_signature = crypto
+    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .update(razorpay_order_id + "|" + razorpay_payment_id)
+    .digest('hex');
+
+  if (generated_signature !== razorpay_signature) {
+    return res.status(400).json({ message: "Payment verification failed" });
+  }
+
+  const user_id = req.user.id;
+
+  db.all(`SELECT project_id FROM cart WHERE user_id = ?`, [user_id], (err, items) => {
+    if (err || !items.length)
+      return res.status(400).json({ message: "Cart empty" });
+
+    const stmt = db.prepare(`
+      INSERT INTO orders (user_id, project_id, status)
+      VALUES (?, ?, 'completed')
+    `);
+
+    items.forEach(item => stmt.run(user_id, item.project_id));
+    stmt.finalize();
+
+    db.run(`DELETE FROM cart WHERE user_id = ?`, [user_id]);
+
+    res.json({ message: "Payment successful, order placed!" });
+  });
+});
 module.exports = router;
