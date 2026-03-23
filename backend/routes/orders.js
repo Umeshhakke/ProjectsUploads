@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const sqlite3 = require('sqlite3').verbose();
-const db = new sqlite3.Database('./database.db');
+const db = require('../config/db'); // ✅ SINGLE DB CONNECTION
 const jwt = require('jsonwebtoken');
 
-// Middleware to check JWT
+
+// ================= AUTH MIDDLEWARE =================
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
+
   if (!token) return res.sendStatus(401);
 
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
@@ -17,86 +18,113 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// ---------- CART ----------
 
-// Add project to cart
+// ================= CART =================
+
+// ➤ Add to cart
 router.post('/cart/add', authenticateToken, (req, res) => {
   const { project_id } = req.body;
   const user_id = req.user.id;
+
   const query = `INSERT INTO cart (user_id, project_id) VALUES (?, ?)`;
-  db.run(query, [user_id, project_id], function(err) {
-    if (err) return res.status(400).json({ message: 'Error adding to cart' });
+
+  db.run(query, [user_id, project_id], function (err) {
+    if (err) {
+      console.log("ADD CART ERROR:", err);
+      return res.status(400).json({ message: 'Error adding to cart' });
+    }
+
     res.json({ message: 'Added to cart', cartId: this.lastID });
   });
 });
 
-// Get cart items
+
+// ➤ Get cart
 router.get('/cart', authenticateToken, (req, res) => {
   const query = `
-    SELECT cart.id, projects.name, projects.price, projects.description
+    SELECT cart.id AS cart_id, projects.name, projects.price, projects.description
     FROM cart
     JOIN projects ON cart.project_id = projects.id
     WHERE cart.user_id = ?
   `;
+
   db.all(query, [req.user.id], (err, rows) => {
-    if (err) return res.status(400).json({ message: 'Error fetching cart' });
+    if (err) {
+      console.log("FETCH CART ERROR:", err);
+      return res.status(400).json({ message: 'Error fetching cart' });
+    }
+
     res.json(rows);
   });
 });
 
-// ---------- CHECKOUT ----------
-// create order
-router.post('/create-order', authenticateToken, async (req, res) => {
-  try {
-    const db = require('../config/db');
 
-    const user_id = req.user.id;
+// ================= CREATE ORDER (RAZORPAY) =================
 
-    // 1️⃣ Get cart items
-    db.all(
-      `SELECT projects.price 
-       FROM cart 
-       JOIN projects ON cart.project_id = projects.id 
-       WHERE cart.user_id = ?`,
-      [user_id],
-      async (err, items) => {
-        if (err) {
-          console.log("DB ERROR:", err);
-          return res.status(500).send("DB error");
-        }
+router.post('/create-order', authenticateToken, (req, res) => {
+  console.log("👉 /create-order API hit");
 
-        if (!items.length) {
-          return res.status(400).json({ message: "Cart empty" });
-        }
+  const user_id = req.user.id;
 
-        // 2️⃣ Calculate total
-        const total = items.reduce((sum, i) => sum + i.price, 0);
+  const query = `
+    SELECT projects.price 
+    FROM cart 
+    JOIN projects ON cart.project_id = projects.id 
+    WHERE cart.user_id = ?
+  `;
 
-        console.log("TOTAL:", total);
+  db.all(query, [user_id], async (err, items) => {
+    if (err) {
+      console.log("DB ERROR:", err);
+      return res.status(500).json({ message: "Database error" });
+    }
 
-        // 3️⃣ Create Razorpay order
-        const razorpay = req.app.locals.razorpay;
+    if (!items.length) {
+      return res.status(400).json({ message: "Cart is empty" });
+    }
 
-        const order = await razorpay.orders.create({
-          amount: Math.round(total * 100), // paisa
-          currency: "INR",
-        });
+    try {
+      // ✅ Calculate total
+      const total = items.reduce((sum, i) => sum + i.price, 0);
 
-        console.log("ORDER CREATED:", order.id);
+      console.log("💰 TOTAL:", total);
 
-        res.json({ order, total });
+      // ✅ Get Razorpay instance
+      const razorpay = req.app.locals.razorpay;
+
+      if (!razorpay) {
+        console.log("❌ Razorpay not initialized");
+        return res.status(500).json({ message: "Payment service not available" });
       }
-    );
-  } catch (err) {
-    console.log("🔥 CREATE ORDER ERROR:", err);
-    res.status(500).send("Server error");
-  }
+
+      // ✅ Create order
+      const order = await razorpay.orders.create({
+        amount: Math.round(total * 100), // ₹ → paise
+        currency: "INR",
+        receipt: `receipt_${Date.now()}`
+      });
+
+      console.log("✅ ORDER CREATED:", order.id);
+
+      res.json({ order, total });
+
+    } catch (err) {
+      console.log("🔥 RAZORPAY ERROR:", err);
+      res.status(500).json({ message: "Order creation failed" });
+    }
+  });
 });
 
-// Checkout cart items
+
+// ================= CHECKOUT =================
+
 router.post('/checkout', authenticateToken, (req, res) => {
   const user_id = req.user.id;
   const { payment_id } = req.body;
+
+  if (!payment_id) {
+    return res.status(400).json({ message: "Payment ID required" });
+  }
 
   db.all(`
     SELECT cart.project_id, projects.file_url
@@ -105,8 +133,14 @@ router.post('/checkout', authenticateToken, (req, res) => {
     WHERE cart.user_id = ?
   `, [user_id], (err, cartItems) => {
 
-    if (err || !cartItems.length)
+    if (err) {
+      console.log("CHECKOUT ERROR:", err);
+      return res.status(500).json({ message: 'Database error' });
+    }
+
+    if (!cartItems.length) {
       return res.status(400).json({ message: 'Cart is empty' });
+    }
 
     const stmt = db.prepare(`
       INSERT INTO orders (user_id, project_id, payment_id, status, download_link)
@@ -119,85 +153,71 @@ router.post('/checkout', authenticateToken, (req, res) => {
 
     stmt.finalize();
 
-    // Clear cart
+    // ✅ Clear cart
     db.run(`DELETE FROM cart WHERE user_id = ?`, [user_id]);
 
-    res.json({ message: 'Payment successful, orders created!' });
+    res.json({ message: '✅ Payment successful, orders created!' });
   });
 });
-// ---------- ORDERS ----------
 
 
-// Get orders for logged-in student
+// ================= USER ORDERS =================
+
 router.get('/my', authenticateToken, (req, res) => {
   const userId = req.user.id;
 
   const query = `
-    SELECT orders.id, projects.name, projects.price, orders.download_link, orders.order_date, orders.status
+    SELECT orders.id, projects.name, projects.price,
+           orders.download_link, orders.order_date, orders.status
     FROM orders
     JOIN projects ON orders.project_id = projects.id
     WHERE orders.user_id = ?
   `;
 
   db.all(query, [userId], (err, rows) => {
-    if (err) return res.status(400).json({ message: 'Error fetching orders' });
+    if (err) {
+      console.log("FETCH ORDERS ERROR:", err);
+      return res.status(400).json({ message: 'Error fetching orders' });
+    }
+
     res.json(rows);
   });
 });
 
-// Get all orders (Admin only)
+
+// ================= ADMIN ORDERS =================
+
 router.get('/all', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ message: 'Access denied' });
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Access denied' });
+  }
 
   const query = `
-    SELECT orders.id, users.name AS student_name, users.email, projects.name AS project_name, projects.price, orders.download_link, orders.status, orders.order_date
+    SELECT orders.id,
+           users.name AS student_name,
+           users.email,
+           projects.name AS project_name,
+           projects.price,
+           orders.download_link,
+           orders.status,
+           orders.order_date
     FROM orders
     JOIN users ON orders.user_id = users.id
     JOIN projects ON orders.project_id = projects.id
   `;
 
   db.all(query, [], (err, rows) => {
-    if (err) return res.status(400).json({ message: 'Error fetching all orders' });
-    res.json(rows);
-  });
-});
-
-router.post('/', (req, res) => {
-  const { user_id, project_ids } = req.body;
-
-  const stmt = db.prepare(`
-    INSERT INTO orders (user_id, project_id, status)
-    VALUES (?, ?, 'completed')
-  `);
-
-  project_ids.forEach((pid) => {
-    stmt.run(user_id, pid);
-  });
-
-  stmt.finalize();
-
-  res.json({ message: 'Order placed successfully' });
-});
-
-router.get('/:userId', (req, res) => {
-  const userId = req.params.userId;
-
-  const query = `
-    SELECT orders.id AS order_id,
-           projects.name,
-           projects.price,
-           projects.file_url
-    FROM orders
-    JOIN projects ON orders.project_id = projects.id
-    WHERE orders.user_id = ?
-  `;
-
-  db.all(query, [userId], (err, rows) => {
-    if (err) return res.status(500).json({ message: 'Error fetching orders' });
+    if (err) {
+      console.log("ADMIN ORDERS ERROR:", err);
+      return res.status(400).json({ message: 'Error fetching all orders' });
+    }
 
     res.json(rows);
   });
 });
+
+
+// ================= DOWNLOAD ACCESS =================
 
 router.get('/download/:projectId/:userId', (req, res) => {
   const { projectId, userId } = req.params;
@@ -212,7 +232,10 @@ router.get('/download/:projectId/:userId', (req, res) => {
   `;
 
   db.get(query, [userId, projectId], (err, row) => {
-    if (err) return res.status(500).json({ message: 'Error' });
+    if (err) {
+      console.log("DOWNLOAD ERROR:", err);
+      return res.status(500).json({ message: 'Server error' });
+    }
 
     if (!row) {
       return res.status(403).json({ message: 'Not allowed' });
@@ -221,4 +244,6 @@ router.get('/download/:projectId/:userId', (req, res) => {
     res.json({ file_url: row.file_url });
   });
 });
+
+
 module.exports = router;
