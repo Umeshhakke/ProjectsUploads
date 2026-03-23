@@ -3,11 +3,12 @@ const router = express.Router();
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./database.db');
 const jwt = require('jsonwebtoken');
+const crypto = require("crypto");
+
 
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  const crypto = require("crypto");
   
   if (!token) return res.sendStatus(401);
 
@@ -34,7 +35,7 @@ router.post('/create-order', authenticateToken, async (req, res) => {
 
     const total = items.reduce((sum, i) => sum + i.price, 0);
 
-    if (total <= 0) {
+    if  (!total || total < 1) {
       return res.status(400).json({ message: "Invalid amount" });
     }
 
@@ -45,6 +46,9 @@ router.post('/create-order', authenticateToken, async (req, res) => {
         amount: total * 100,
         currency: "INR",
         receipt: "receipt_" + Date.now(),
+        notes: {
+          user_id: user_id
+        }
       });
 
       res.json({
@@ -56,6 +60,9 @@ router.post('/create-order', authenticateToken, async (req, res) => {
     } catch (err) {
       console.log(err);
       res.status(500).json({ message: "Order creation failed" });
+    }
+    if (err) {
+      return res.status(500).json({ message: "DB error" });
     }
   });
 });
